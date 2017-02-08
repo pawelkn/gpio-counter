@@ -1,0 +1,10 @@
+*.ko
+*.mod.c
+*.mod.o
+*.o
+*.pro
+*.pro.user
+
+modules.order
+Module.symvers
+

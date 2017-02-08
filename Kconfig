@@ -1,0 +1,8 @@
+config INPUT_GPIO_COUNTER
+	tristate "Generic GPIO Counter support"
+	depends on GPIOLIB || COMPILE_TEST
+	help
+	  Say Y here if you have a counter connected to a GPIO pin.
+
+	  To compile this driver as a module, choose M here: the
+	  module will be called gpio-counter.
