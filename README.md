@@ -2,7 +2,7 @@
 
 Generic GPIO impulse counter. Counts impulses using GPIO interrupts.
 Can be activated on low or high level. If needed, 
-a debounce procedure can be perform.
+a debounce procedure can be performed.
 
 ## Cross-compile build
 ```sh
@@ -19,7 +19,7 @@ Required properties:
 * gpios: a spec for a GPIO to be used
 
 Optional properties:
-* debounce-delay-ms: pulse debounce timing
+* debounce-delay-ms: pulse debounce duration
 
 ```c
         counter {
