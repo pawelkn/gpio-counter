@@ -4,7 +4,11 @@
 *.o
 *.pro
 *.pro.user
+*.ko.cmd
+*.mod.o.cmd
+*.o.cmd
 
+.tmp_versions
 modules.order
 Module.symvers
 
