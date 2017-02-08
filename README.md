@@ -21,6 +21,7 @@ Required properties:
 Optional properties:
 * debounce-delay-ms: pulse debounce duration
 
+Example:
 ```c
         counter {
                 compatible = "gpio-counter";
