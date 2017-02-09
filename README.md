@@ -19,13 +19,13 @@ Required properties:
 * gpios: a spec for a GPIO to be used
 
 Optional properties:
-* debounce-delay-ms: pulse debounce duration
+* debounce-delay-us: pulse debounce duration
 
 Example:
 ```c
         counter {
                 compatible = "gpio-counter";
                 gpios = <&gpio1 14 GPIO_ACTIVE_HIGH>;
-                debounce-delay-ms = <1>;
+                debounce-delay-us = <2>;
         };
 ```

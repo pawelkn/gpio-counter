@@ -24,6 +24,7 @@
 #include <linux/pm.h>
 #include <linux/miscdevice.h>
 #include <linux/fs.h>
+#include <linux/delay.h>
 
 #include <asm/uaccess.h>
 
@@ -32,7 +33,7 @@
 struct gpio_counter_platform_data {
     unsigned int gpio;
     unsigned int inverted;
-    unsigned int debounce_ms;
+    unsigned int debounce_us;
 };
 
 struct gpio_counter {
@@ -41,11 +42,7 @@ struct gpio_counter {
 
     unsigned long count;
     unsigned int irq;
-
-    bool state;
     bool last_state;
-
-    struct delayed_work debounce_work;
 };
 
 static ssize_t gpio_counter_read(struct file *file, char __user * userbuf, size_t count, loff_t * ppos)
@@ -95,37 +92,24 @@ static bool gpio_counter_get_state(const struct gpio_counter_platform_data *pdat
     return state;
 }
 
-static void gpio_counter_process_state_change(struct gpio_counter *counter)
-{
-    if (counter->state && !counter->last_state)
-        counter->count++;
-
-    counter->last_state = counter->state;
-}
-
 static irqreturn_t gpio_counter_irq(int irq, void *dev_id)
 {
     struct gpio_counter *counter = dev_id;
+    const struct gpio_counter_platform_data *pdata = counter->pdata;
 
-    counter->state = gpio_counter_get_state(counter->pdata);
+    bool state = gpio_counter_get_state(pdata);
 
-    if (!counter->pdata->debounce_ms)
-        gpio_counter_process_state_change(counter);
+    if (pdata->debounce_us)
+        udelay(pdata->debounce_us);
 
-    else if (!delayed_work_pending(&counter->debounce_work))
-        schedule_delayed_work(&counter->debounce_work,
-            msecs_to_jiffies(counter->pdata->debounce_ms));
+    if (state != gpio_counter_get_state(pdata))
+        return IRQ_HANDLED;
 
+    if (state && !counter->last_state)
+        counter->count++;
+
+    counter->last_state = state;
     return IRQ_HANDLED;
-}
-
-static void gpio_counter_debounce_work(struct work_struct *work)
-{
-    struct gpio_counter *counter = container_of(work, struct gpio_counter, debounce_work.work);
-
-    bool debounced_state = gpio_counter_get_state(counter->pdata);
-    if (debounced_state == counter->state)
-        gpio_counter_process_state_change(counter);
 }
 
 static const struct of_device_id gpio_counter_of_match[] = {
@@ -153,9 +137,9 @@ static struct gpio_counter_platform_data *gpio_counter_parse_dt(struct device *d
     pdata->gpio = of_get_gpio_flags(np, 0, &flags);
     pdata->inverted = flags & OF_GPIO_ACTIVE_LOW;
 
-    err = of_property_read_u32(np, "debounce-delay-ms", &pdata->debounce_ms);
+    err = of_property_read_u32(np, "debounce-delay-us", &pdata->debounce_us);
     if (err)
-        pdata->debounce_ms = 0;
+        pdata->debounce_us = 0;
 
     return pdata;
 }
@@ -204,8 +188,6 @@ static int gpio_counter_probe(struct platform_device *pdev)
         goto exit_free_gpio;
     }
 
-    INIT_DELAYED_WORK(&counter->debounce_work, gpio_counter_debounce_work);
-
     counter->miscdev.minor  = MISC_DYNAMIC_MINOR;
     counter->miscdev.name   = dev_name(dev);
     counter->miscdev.fops   = &gpio_counter_fops;
@@ -239,9 +221,6 @@ static int gpio_counter_remove(struct platform_device *pdev)
     const struct gpio_counter_platform_data *pdata = counter->pdata;
 
     device_init_wakeup(&pdev->dev, false);
-
-    if (delayed_work_pending(&counter->debounce_work))
-        cancel_delayed_work(&counter->debounce_work);
 
     misc_deregister(&counter->miscdev);
     free_irq(counter->irq, counter);
