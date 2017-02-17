@@ -212,7 +212,8 @@ static int gpio_counter_probe(struct platform_device *pdev)
         goto exit_free_mem;
     }
 
-    counter->last_state = gpio_counter_get_state (pdata);
+    counter->last_stable_state = gpio_counter_get_state (pdata);
+    counter->last_state = counter->last_stable_state;
     counter->irq = gpio_to_irq (pdata->gpio);
     counter->last_ns = gpio_counter_get_time_nsec();
 
