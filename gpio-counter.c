@@ -24,24 +24,26 @@
 #include <linux/pm.h>
 #include <linux/miscdevice.h>
 #include <linux/fs.h>
-#include <linux/delay.h>
+#include <linux/time.h>
 
 #include <asm/uaccess.h>
 
 #define DRV_NAME "gpio-counter"
 
 struct gpio_counter_platform_data {
-    unsigned int gpio;
-    unsigned int inverted;
-    unsigned int debounce_us;
+    int gpio;
+    bool inverted;
+    u32 debounce_us;
 };
 
 struct gpio_counter {
-    struct miscdevice miscdev;
     const struct gpio_counter_platform_data *pdata;
+    struct miscdevice miscdev;    
+    struct delayed_work work;
 
-    unsigned long count;
-    unsigned int irq;
+    int irq;
+    u64 count;
+    s64 last_ns;
     bool last_state;
 };
 
@@ -51,8 +53,8 @@ static ssize_t gpio_counter_read(struct file *file, char __user * userbuf, size_
     struct device *dev = miscdev->parent;
     struct gpio_counter *counter = dev_get_drvdata(dev);
 
-    char buf[25];
-    int len = sprintf(buf, "%lu\n", counter->count);
+    char buf[22];
+    int len = sprintf(buf, "%llu\n", counter->count);
 
     if ((len < 0) || (len > count))
         return -EINVAL;
@@ -73,7 +75,7 @@ static ssize_t gpio_counter_write(struct file *file, const char __user * userbuf
     struct device *dev = miscdev->parent;
     struct gpio_counter *counter = dev_get_drvdata(dev);
 
-    if (kstrtoul_from_user(userbuf, count, 0, &counter->count))
+    if (kstrtoull_from_user(userbuf, count, 0, &counter->count))
         return -EINVAL;
 
     return count;
@@ -88,27 +90,56 @@ static struct file_operations gpio_counter_fops = {
 static bool gpio_counter_get_state(const struct gpio_counter_platform_data *pdata)
 {
     bool state = gpio_get_value(pdata->gpio);
-    state ^= pdata->inverted;
+    if (pdata->inverted)
+        state = !state;
+
     return state;
+}
+
+static s64 gpio_counter_get_time_nsec(void)
+{
+    struct timespec ts;
+    getnstimeofday (&ts);
+    return timespec_to_ns (&ts);
+}
+
+static void gpio_counter_process_state_change(struct gpio_counter *counter)
+{
+    bool state;
+    s64 current_ns, delta_ns, debounce_ns;
+
+    state = gpio_counter_get_state (counter->pdata);
+    current_ns = gpio_counter_get_time_nsec();
+
+    if (state && !counter->last_state) {
+        delta_ns = current_ns - counter->last_ns;
+        debounce_ns = (s64)counter->pdata->debounce_us * NSEC_PER_USEC;
+
+        if (delta_ns > debounce_ns)
+            counter->count++;
+    }
+
+    counter->last_state = state;
+    counter->last_ns = current_ns;
+}
+
+static void gpio_counter_delayed_work(struct work_struct *work)
+{
+    struct gpio_counter *counter = container_of(work, struct gpio_counter, work.work);
+    gpio_counter_process_state_change (counter);
 }
 
 static irqreturn_t gpio_counter_irq(int irq, void *dev_id)
 {
     struct gpio_counter *counter = dev_id;
-    const struct gpio_counter_platform_data *pdata = counter->pdata;
+    gpio_counter_process_state_change (counter);
 
-    bool state = gpio_counter_get_state(pdata);
+    if (delayed_work_pending (&counter->work))
+        cancel_delayed_work (&counter->work);
 
-    if (pdata->debounce_us)
-        udelay(pdata->debounce_us);
+    schedule_delayed_work (&counter->work,
+        usecs_to_jiffies (counter->pdata->debounce_us));
 
-    if (state != gpio_counter_get_state(pdata))
-        return IRQ_HANDLED;
-
-    if (state && !counter->last_state)
-        counter->count++;
-
-    counter->last_state = state;
     return IRQ_HANDLED;
 }
 
@@ -177,8 +208,9 @@ static int gpio_counter_probe(struct platform_device *pdev)
         goto exit_free_mem;
     }
 
-    counter->last_state = gpio_counter_get_state(pdata);
-    counter->irq = gpio_to_irq(pdata->gpio);
+    counter->last_state = gpio_counter_get_state (pdata);
+    counter->irq = gpio_to_irq (pdata->gpio);
+    counter->last_ns = gpio_counter_get_time_nsec();
 
     err = request_irq(counter->irq, &gpio_counter_irq,
                       IRQF_TRIGGER_FALLING | IRQF_TRIGGER_RISING,
@@ -192,6 +224,8 @@ static int gpio_counter_probe(struct platform_device *pdev)
     counter->miscdev.name   = dev_name(dev);
     counter->miscdev.fops   = &gpio_counter_fops;
     counter->miscdev.parent = dev;
+
+    INIT_DELAYED_WORK(&counter->work, gpio_counter_delayed_work);
 
     err = misc_register(&counter->miscdev);
     if (err) {
@@ -222,6 +256,9 @@ static int gpio_counter_remove(struct platform_device *pdev)
 
     device_init_wakeup(&pdev->dev, false);
 
+    if (delayed_work_pending(&counter->work))
+        cancel_delayed_work(&counter->work);
+
     misc_deregister(&counter->miscdev);
     free_irq(counter->irq, counter);
     gpio_free(pdata->gpio);
@@ -237,7 +274,7 @@ static int gpio_counter_suspend(struct device *dev)
     struct gpio_counter *counter = dev_get_drvdata(dev);
 
     if (device_may_wakeup(dev))
-        enable_irq_wake(counter->irq);
+        disable_irq_wake(counter->irq);
 
     return 0;
 }
@@ -247,7 +284,7 @@ static int gpio_counter_resume(struct device *dev)
     struct gpio_counter *counter = dev_get_drvdata(dev);
 
     if (device_may_wakeup(dev))
-        disable_irq_wake(counter->irq);
+        enable_irq_wake(counter->irq);
 
     return 0;
 }
