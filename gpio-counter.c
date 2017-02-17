@@ -36,6 +36,13 @@ struct gpio_counter_platform_data {
     u32 debounce_us;
 };
 
+struct gpio_counter_data {
+    u64 count;
+    s64 ns;
+    bool state;
+    s64 delta;
+};
+
 struct gpio_counter {
     const struct gpio_counter_platform_data *pdata;
     struct miscdevice miscdev;    
@@ -45,6 +52,10 @@ struct gpio_counter {
     u64 count;
     s64 last_ns;
     bool last_state;
+    bool last_stable_state;
+
+    int i;
+    struct gpio_counter_data data[100];
 };
 
 static ssize_t gpio_counter_read(struct file *file, char __user * userbuf, size_t count, loff_t * ppos)
@@ -53,8 +64,17 @@ static ssize_t gpio_counter_read(struct file *file, char __user * userbuf, size_
     struct device *dev = miscdev->parent;
     struct gpio_counter *counter = dev_get_drvdata(dev);
 
-    char buf[22];
-    int len = sprintf(buf, "%llu\n", counter->count);
+    char buf[1000];
+    int len, i;
+
+    for(i = 0; i < counter->i; i++)
+        printk( "%lld; %d; %llu; %lld\n",
+            counter->data[i].ns,
+            counter->data[i].state,
+            counter->data[i].count,
+            counter->data[i].delta);
+
+    len = sprintf(buf, "%llu\n", counter->count);
 
     if ((len < 0) || (len > count))
         return -EINVAL;
@@ -74,6 +94,8 @@ static ssize_t gpio_counter_write(struct file *file, const char __user * userbuf
     struct miscdevice *miscdev = file->private_data;
     struct device *dev = miscdev->parent;
     struct gpio_counter *counter = dev_get_drvdata(dev);
+
+    counter->i=0;
 
     if (kstrtoull_from_user(userbuf, count, 0, &counter->count))
         return -EINVAL;
@@ -106,18 +128,33 @@ static s64 gpio_counter_get_time_nsec(void)
 static void gpio_counter_process_state_change(struct gpio_counter *counter)
 {
     bool state;
-    s64 current_ns, delta_ns, debounce_ns;
+    s64 current_ns;
+    s64 delta_ns = 0;
+    s64 debounce_ns;
 
     state = gpio_counter_get_state (counter->pdata);
     current_ns = gpio_counter_get_time_nsec();
+    delta_ns = current_ns - counter->last_ns;
+    debounce_ns = (s64)counter->pdata->debounce_us * NSEC_PER_USEC;
 
-    if (state && !counter->last_state) {
-        delta_ns = current_ns - counter->last_ns;
-        debounce_ns = (s64)counter->pdata->debounce_us * NSEC_PER_USEC;
+    counter->data[counter->i].count = counter->count;
+    counter->data[counter->i].ns = current_ns;
+    counter->data[counter->i].state = counter->last_state;
+    counter->data[counter->i].delta = 0;
+    counter->i++;
 
-        if (delta_ns > debounce_ns)
+    if (delta_ns > debounce_ns) {
+        if (counter->last_state && !counter->last_stable_state)
             counter->count++;
+
+        counter->last_stable_state = counter->last_state;
     }
+
+    counter->data[counter->i].count = counter->count;
+    counter->data[counter->i].ns = current_ns;
+    counter->data[counter->i].state = state;
+    counter->data[counter->i].delta = delta_ns;
+    counter->i++;
 
     counter->last_state = state;
     counter->last_ns = current_ns;
